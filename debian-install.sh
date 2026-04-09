@@ -519,6 +519,82 @@ echo -en "\e[1A\e[0K"
 FILE=$(basename $URL)
 msg_ok "Downloaded ${CL}${BL}${FILE}${CL}"
 
+msg_info "Preparing post-install customization (network & essentials)"
+if ! command -v virt-customize &>/dev/null; then
+  apt-get install -y libguestfs-tools &>/dev/null
+fi
+
+# ── Network config for ifupdown2 (/etc/network/interfaces) ──
+cat <<'NETEOF' > /tmp/pve-interfaces
+auto lo
+iface lo inet loopback
+
+auto ens18
+iface ens18 inet static
+    address 20.6.20.98/24
+    gateway 20.6.20.1
+    dns-nameservers 8.8.8.8 1.1.1.1
+
+allow-hotplug ens18
+NETEOF
+
+# ── systemd-networkd config (fallback for first boot before ifupdown2) ──
+cat <<'SDEOF' > /tmp/pve-ens18.network
+[Match]
+Name=ens18
+
+[Network]
+Address=20.6.20.98/24
+Gateway=20.6.20.1
+DNS=8.8.8.8
+DNS=1.1.1.1
+SDEOF
+
+# ── First-boot script: install essential packages & switch to ifupdown2 ──
+cat <<'FBEOF' > /tmp/pve-firstboot.sh
+#!/bin/bash
+set -e
+export DEBIAN_FRONTEND=noninteractive
+
+apt-get update -y
+apt-get install -y \
+  ifupdown2 \
+  curl wget \
+  nano vim-tiny \
+  htop \
+  net-tools dnsutils \
+  openssh-server \
+  sudo \
+  ca-certificates gnupg \
+  bash-completion \
+  locales \
+  cron logrotate rsyslog \
+  qemu-guest-agent \
+  less man-db \
+  iputils-ping iproute2 traceroute \
+  apt-transport-https \
+  software-properties-common \
+  lsb-release
+
+# Switch from systemd-networkd to ifupdown2
+systemctl disable systemd-networkd.service 2>/dev/null || true
+systemctl stop systemd-networkd.service 2>/dev/null || true
+systemctl enable networking.service
+systemctl enable ssh.service
+systemctl enable qemu-guest-agent.service
+systemctl restart networking.service
+FBEOF
+
+# ── Apply customizations to the downloaded image ──
+virt-customize -a "$FILE" \
+  --upload /tmp/pve-interfaces:/etc/network/interfaces \
+  --mkdir /etc/systemd/network \
+  --upload /tmp/pve-ens18.network:/etc/systemd/network/20-ens18.network \
+  --firstboot /tmp/pve-firstboot.sh
+
+rm -f /tmp/pve-interfaces /tmp/pve-ens18.network /tmp/pve-firstboot.sh
+msg_ok "Post-install customization applied (static IP 20.6.20.98/24)"
+
 STORAGE_TYPE=$(pvesm status -storage $STORAGE | awk 'NR>1 {print $2}')
 case $STORAGE_TYPE in
 nfs | dir)
