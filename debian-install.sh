@@ -458,6 +458,87 @@ function advanced_settings() {
   fi
 }
 
+function ask_network_settings() {
+  if ! NET_TYPE=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "NETWORK TYPE" \
+    --radiolist --cancel-button Exit-Script "Choose network configuration" 10 58 2 \
+    "static" "Static IP (fixed address)" ON \
+    "dhcp" "DHCP (dynamic, auto-assigned)" OFF \
+    3>&1 1>&2 2>&3); then
+    exit-script
+  fi
+
+  if [ "$NET_TYPE" == "dhcp" ]; then
+    NET_IP="" NET_CIDR="" NET_GW="" NET_DNS="8.8.8.8 1.1.1.1" NET_GW_ONLINK="no"
+    echo -e "${GATEWAY}${BOLD}${DGN}Network: ${BGN}DHCP${CL}"
+    return
+  fi
+
+  while true; do
+    if NET_IP=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox \
+      "Static IP Address (e.g., 192.168.1.100)" 8 58 "" \
+      --title "NETWORK - IP ADDRESS" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+      if [[ "$NET_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        IFS='.' read -r -a _octs <<< "$NET_IP"
+        _ok=true
+        for _o in "${_octs[@]}"; do (( _o <= 255 )) || { _ok=false; break; }; done
+        if $_ok; then echo -e "${GATEWAY}${BOLD}${DGN}IP Address: ${BGN}$NET_IP${CL}"; break; fi
+      fi
+      whiptail --backtitle "Proxmox VE Helper Scripts" --title "INVALID INPUT" \
+        --msgbox "Enter a valid IPv4 address (e.g., 192.168.1.100)" 8 58
+    else exit-script; fi
+  done
+
+  while true; do
+    if NET_CIDR=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox \
+      "Subnet prefix length (1–30, e.g., 24 for /24)" 8 58 "24" \
+      --title "NETWORK - SUBNET PREFIX" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+      if [[ "$NET_CIDR" =~ ^[0-9]+$ ]] && (( NET_CIDR >= 1 && NET_CIDR <= 30 )); then
+        echo -e "${GATEWAY}${BOLD}${DGN}Subnet prefix: ${BGN}/${NET_CIDR}${CL}"; break
+      fi
+      whiptail --backtitle "Proxmox VE Helper Scripts" --title "INVALID INPUT" \
+        --msgbox "Prefix must be between 1 and 30 (e.g., 24)." 8 58
+    else exit-script; fi
+  done
+
+  while true; do
+    if NET_GW=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox \
+      "Gateway IP (e.g., 192.168.1.1)" 8 58 "" \
+      --title "NETWORK - GATEWAY" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+      if [[ "$NET_GW" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        IFS='.' read -r -a _octs <<< "$NET_GW"
+        _ok=true
+        for _o in "${_octs[@]}"; do (( _o <= 255 )) || { _ok=false; break; }; done
+        if $_ok; then echo -e "${GATEWAY}${BOLD}${DGN}Gateway: ${BGN}$NET_GW${CL}"; break; fi
+      fi
+      whiptail --backtitle "Proxmox VE Helper Scripts" --title "INVALID INPUT" \
+        --msgbox "Enter a valid gateway IP (e.g., 192.168.1.1)" 8 58
+    else exit-script; fi
+  done
+
+  if NET_DNS=$(whiptail --backtitle "Proxmox VE Helper Scripts" --inputbox \
+    "DNS servers (space-separated, e.g., 8.8.8.8 1.1.1.1)" 8 58 "8.8.8.8 1.1.1.1" \
+    --title "NETWORK - DNS SERVERS" --cancel-button Exit-Script 3>&1 1>&2 2>&3); then
+    [[ -z "$NET_DNS" ]] && NET_DNS="8.8.8.8 1.1.1.1"
+    echo -e "${GATEWAY}${BOLD}${DGN}DNS: ${BGN}$NET_DNS${CL}"
+  else exit-script; fi
+
+  # Public/cloud IPs where the gateway is outside the subnet (Hetzner, OVH, etc.)
+  NET_GW_ONLINK="no"
+  if (whiptail --backtitle "Proxmox VE Helper Scripts" --title "GATEWAY ROUTING MODE" \
+    --defaultno --yesno \
+    "Is this a PUBLIC / cloud IP where the gateway is outside the subnet?\n(e.g., IP 1.2.3.4/32 with gateway 1.2.3.1 on a different network)\n\nIf unsure, answer No." 11 62); then
+    NET_GW_ONLINK="yes"
+    echo -e "${GATEWAY}${BOLD}${DGN}Gateway mode: ${BGN}off-link (public IP)${CL}"
+  else
+    echo -e "${GATEWAY}${BOLD}${DGN}Gateway mode: ${BGN}standard${CL}"
+  fi
+
+  if ! (whiptail --backtitle "Proxmox VE Helper Scripts" --title "NETWORK SUMMARY" \
+    --yesno "Static network configuration:\n\n  IP:      ${NET_IP}/${NET_CIDR}\n  Gateway: ${NET_GW}\n  DNS:     ${NET_DNS}\n  Mode:    $([ "$NET_GW_ONLINK" == "yes" ] && echo 'off-link (public)' || echo 'standard')\n\nProceed with these settings?" 13 62); then
+    ask_network_settings
+  fi
+}
+
 function start_script() {
   if (whiptail --backtitle "Proxmox VE Helper Scripts" --title "SETTINGS" --yesno "Use Default Settings?" --no-button Advanced 10 58); then
     header_info
@@ -475,6 +556,7 @@ arch_check
 pve_check
 ssh_check
 start_script
+ask_network_settings
 
 post_to_api_vm
 
@@ -519,81 +601,104 @@ echo -en "\e[1A\e[0K"
 FILE=$(basename $URL)
 msg_ok "Downloaded ${CL}${BL}${FILE}${CL}"
 
-msg_info "Preparing post-install customization (network & essentials)"
+msg_info "Customizing image: pre-installing packages (may take several minutes)"
 if ! command -v virt-customize &>/dev/null; then
   apt-get install -y libguestfs-tools &>/dev/null
 fi
 
-# ── Network config for ifupdown2 (/etc/network/interfaces) ──
-cat <<'NETEOF' > /tmp/pve-interfaces
+VIRT_PACKAGES="ifupdown2,isc-dhcp-client,curl,wget,nano,vim-tiny,htop,net-tools,dnsutils,openssh-server,sudo,ca-certificates,gnupg,bash-completion,locales,cron,logrotate,rsyslog,qemu-guest-agent,less,man-db,iputils-ping,iproute2,traceroute,apt-transport-https,software-properties-common,lsb-release"
+
+# Detect the first non-loopback ethernet interface inside the image
+# This is done by inspecting /sys/class/net inside the image via guestfish.
+# Typical result on Proxmox virtio: ens18. Fallback: ens18.
+if command -v guestfish &>/dev/null; then
+  _DETECTED_IFACE=$(guestfish --ro -a "$FILE" run : \
+    find / /sys/class/net : \
+    glob ls /sys/class/net/ 2>/dev/null \
+    | tr ' ' '\n' | grep -v '^lo$' | grep -v '^$' | head -1)
+fi
+IFACE=${_DETECTED_IFACE:-ens18}
+msg_ok "Network interface detected: ${CL}${BL}${IFACE}${CL}"
+
+if [ "$CLOUD_INIT" == "no" ]; then
+  # Build /etc/network/interfaces with NO allow-hotplug duplication
+  if [ "$NET_TYPE" == "static" ]; then
+    if [ "$NET_GW_ONLINK" == "yes" ]; then
+      # Off-link gateway: add a host route so the kernel can reach the gateway
+      cat > /tmp/pve-interfaces <<NETEOF
 auto lo
 iface lo inet loopback
 
-auto ens18
-iface ens18 inet static
-    address 20.6.20.98/24
-    gateway 20.6.20.1
-    dns-nameservers 8.8.8.8 1.1.1.1
-
-allow-hotplug ens18
+auto ${IFACE}
+iface ${IFACE} inet static
+    address ${NET_IP}/${NET_CIDR}
+    gateway ${NET_GW}
+    post-up ip route add ${NET_GW}/32 dev ${IFACE} || true
+    post-up ip route change default via ${NET_GW} onlink || true
 NETEOF
+    else
+      cat > /tmp/pve-interfaces <<NETEOF
+auto lo
+iface lo inet loopback
 
-# ── systemd-networkd config (fallback for first boot before ifupdown2) ──
-cat <<'SDEOF' > /tmp/pve-ens18.network
-[Match]
-Name=ens18
+auto ${IFACE}
+iface ${IFACE} inet static
+    address ${NET_IP}/${NET_CIDR}
+    gateway ${NET_GW}
+NETEOF
+    fi
+    # Build /etc/resolv.conf from space-separated DNS list
+    for _ns in $NET_DNS; do echo "nameserver $_ns"; done > /tmp/pve-resolv.conf
+  else
+    cat > /tmp/pve-interfaces <<NETEOF
+auto lo
+iface lo inet loopback
 
-[Network]
-Address=20.6.20.98/24
-Gateway=20.6.20.1
-DNS=8.8.8.8
-DNS=1.1.1.1
-SDEOF
+auto ${IFACE}
+iface ${IFACE} inet dhcp
+NETEOF
+  fi
 
-# ── First-boot script: install essential packages & switch to ifupdown2 ──
-cat <<'FBEOF' > /tmp/pve-firstboot.sh
-#!/bin/bash
-set -e
-export DEBIAN_FRONTEND=noninteractive
+  # Build the virt-customize argument array so we can conditionally add resolv.conf
+  VCARGS=(
+    "-a" "$FILE"
+    "--install" "${VIRT_PACKAGES}"
+    # Disable conflicting network managers BEFORE enabling ifupdown2
+    "--run-command" "systemctl disable systemd-networkd.service 2>/dev/null || true"
+    "--run-command" "systemctl disable systemd-networkd-wait-online.service 2>/dev/null || true"
+    "--run-command" "systemctl disable NetworkManager.service 2>/dev/null || true"
+    "--run-command" "systemctl disable systemd-resolved.service 2>/dev/null || true"
+    "--run-command" "systemctl enable networking.service"
+    "--run-command" "systemctl enable ssh.service"
+    "--run-command" "systemctl enable qemu-guest-agent.service"
+    "--upload" "/tmp/pve-interfaces:/etc/network/interfaces"
+    "--run-command" "chmod 644 /etc/network/interfaces"
+  )
+  if [ "$NET_TYPE" == "static" ]; then
+    # Write resolv.conf as a plain file; remove any symlink that systemd-resolved may have left
+    VCARGS+=(
+      "--run-command" "rm -f /etc/resolv.conf"
+      "--upload" "/tmp/pve-resolv.conf:/etc/resolv.conf"
+      "--run-command" "chmod 644 /etc/resolv.conf"
+    )
+  fi
 
-apt-get update -y
-apt-get install -y \
-  ifupdown2 \
-  curl wget \
-  nano vim-tiny \
-  htop \
-  net-tools dnsutils \
-  openssh-server \
-  sudo \
-  ca-certificates gnupg \
-  bash-completion \
-  locales \
-  cron logrotate rsyslog \
-  qemu-guest-agent \
-  less man-db \
-  iputils-ping iproute2 traceroute \
-  apt-transport-https \
-  software-properties-common \
-  lsb-release
+  virt-customize "${VCARGS[@]}"
+  rm -f /tmp/pve-interfaces /tmp/pve-resolv.conf
 
-# Switch from systemd-networkd to ifupdown2
-systemctl disable systemd-networkd.service 2>/dev/null || true
-systemctl stop systemd-networkd.service 2>/dev/null || true
-systemctl enable networking.service
-systemctl enable ssh.service
-systemctl enable qemu-guest-agent.service
-systemctl restart networking.service
-FBEOF
-
-# ── Apply customizations to the downloaded image ──
-virt-customize -a "$FILE" \
-  --upload /tmp/pve-interfaces:/etc/network/interfaces \
-  --mkdir /etc/systemd/network \
-  --upload /tmp/pve-ens18.network:/etc/systemd/network/20-ens18.network \
-  --firstboot /tmp/pve-firstboot.sh
-
-rm -f /tmp/pve-interfaces /tmp/pve-ens18.network /tmp/pve-firstboot.sh
-msg_ok "Post-install customization applied (static IP 20.6.20.98/24)"
+  if [ "$NET_TYPE" == "static" ]; then
+    msg_ok "Image customized: static IP ${NET_IP}/${NET_CIDR} via ${NET_GW}"
+  else
+    msg_ok "Image customized: DHCP"
+  fi
+else
+  # Cloud-init image — packages only; cloud-init handles networking
+  virt-customize -a "$FILE" \
+    --install "${VIRT_PACKAGES}" \
+    --run-command 'systemctl enable ssh.service' \
+    --run-command 'systemctl enable qemu-guest-agent.service'
+  msg_ok "Image customized (network will be configured via cloud-init)"
+fi
 
 STORAGE_TYPE=$(pvesm status -storage $STORAGE | awk 'NR>1 {print $2}')
 case $STORAGE_TYPE in
@@ -641,6 +746,17 @@ else
     -boot order=scsi0 \
     -serial0 socket >/dev/null
 fi
+
+# Configure cloud-init network if the cloud-init image path was chosen
+if [ "$CLOUD_INIT" == "yes" ]; then
+  if [ "$NET_TYPE" == "static" ]; then
+    qm set $VMID --ipconfig0 "ip=${NET_IP}/${NET_CIDR},gw=${NET_GW}" >/dev/null
+    qm set $VMID --nameserver "$(echo "$NET_DNS" | tr ' ' ',')" >/dev/null
+  else
+    qm set $VMID --ipconfig0 "ip=dhcp" >/dev/null
+  fi
+fi
+
 DESCRIPTION=$(
   cat <<EOF
 <div align='center'>
@@ -685,6 +801,31 @@ if [ "$START_VM" == "yes" ]; then
   msg_info "Starting Debian 12 VM"
   qm start $VMID
   msg_ok "Started Debian 12 VM"
+
+  if [ "${NET_TYPE:-}" == "static" ]; then
+    msg_info "Waiting for VM to come online at ${NET_IP} (up to 120s)..."
+    _VM_ONLINE=false
+    for _i in $(seq 1 24); do
+      if qm agent "$VMID" ping &>/dev/null 2>&1 || ping -c 1 -W 1 "$NET_IP" &>/dev/null 2>&1; then
+        _VM_ONLINE=true
+        break
+      fi
+      sleep 5
+    done
+
+    if $_VM_ONLINE; then
+      if ping -c 2 -W 2 "$NET_IP" &>/dev/null 2>&1; then
+        msg_ok "VM at ${NET_IP} is reachable from Proxmox host"
+      else
+        msg_error "Guest-agent up but ${NET_IP} not responding to ping"
+        echo -e "${INFO}${YW}Inspect interface inside VM: qm terminal $VMID${CL}"
+        echo -e "${INFO}${YW}Check: ip addr show ${IFACE:-ens18}  |  ip route  |  cat /etc/network/interfaces${CL}"
+      fi
+    else
+      msg_error "VM did not come online within 120s"
+      echo -e "${INFO}${YW}Debug: qm status $VMID  |  qm terminal $VMID${CL}"
+    fi
+  fi
 fi
 
 msg_ok "Completed successfully!\n"
