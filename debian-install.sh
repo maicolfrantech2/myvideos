@@ -3,7 +3,7 @@
 # Copyright (c) 2021-2025 community-scripts ORG
 # Author: MickLesk (CanbiZ)
 # License: MIT | https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
-# Installation command bash -c "$(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/vm/debian-vm.sh)"
+# Installation command bash -c "$(curl -fsSL https://raw.githubusercontent.com/maicolfrantech2/myvideos/refs/heads/main/debian-install.sh)"
 
 source /dev/stdin <<<$(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/api.func)
 
